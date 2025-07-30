@@ -1,0 +1,8 @@
+pandas==2.2.3
+flask
+redis
+flask-cors
+flask-socketio
+eventlet
+flask_cors
+plotly

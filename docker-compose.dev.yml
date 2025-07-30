@@ -1,0 +1,196 @@
+version: '3.8'
+
+networks:
+  my_bridge:
+    driver: bridge
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 32181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      my_bridge:
+        aliases:
+          - zookeeper
+
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:32181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      JMX_PORT: ""
+      KAFKA_JMX_OPTS: "-Dcom.sun.management.jmxremote=false"
+    networks:
+      my_bridge:
+        aliases:
+          - kafka
+    ports:  
+      - "9092:9092"
+
+  kafka2:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:32181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+    networks:
+      my_bridge:
+        aliases:
+          - kafka2
+    ports:
+      - "9093:9092"
+
+  kafka3:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 3
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:32181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+    networks:
+      my_bridge:
+        aliases:
+          - kafka3
+    ports:
+      - "9094:9092"
+
+  init-kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - kafka
+      - kafka2
+      - kafka3
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: >
+      "
+      echo 'Waiting for Kafka brokers to be ready...';
+      while ! nc -z kafka 9092; do sleep 1; done;
+      while ! nc -z kafka2 9092; do sleep 1; done;
+      while ! nc -z kafka3 9092; do sleep 1; done;
+
+      echo 'Creating topic...';
+      /usr/bin/kafka-topics --create --if-not-exists --topic taxi-location --partitions 3 --replication-factor 3 --bootstrap-server kafka:9092,kafka2:9092,kafka3:9092;
+
+      echo 'Topic created successfully.';
+      "
+    networks:
+      - my_bridge
+
+    
+  kafka-producer:
+    container_name: kafka-producer
+    build:
+      context: .
+      dockerfile: kafka-producer/Dockerfile
+    depends_on:
+      - init-kafka
+    environment:
+      KAFKA_SERVER: kafka:9092
+      PYTHONPATH: /app/metrics
+    networks:
+      - my_bridge
+    volumes:
+      - ./metrics:/app/metrics
+  
+  flink:
+    container_name: flink-consumer
+    build:
+      context: flink-consumer/
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - zookeeper
+      - redis
+      - init-kafka
+    environment:
+      - ZOOKEEPER_SERVER=zookeeper:32181
+      - KAFKA_SERVER=kafka:9092
+    networks:
+      - my_bridge
+    volumes:
+      - ./metrics:/app/metrics
+
+
+  redis:
+    image: redis:6.0.7
+    container_name: redis
+    restart: always
+    volumes:
+      - redis_volume_data:/data
+    ports:
+      - 6379:6379
+    networks:
+      my_bridge:
+        aliases:
+          - redis
+  
+
+  redis_insight:
+    image: redislabs/redisinsight:1.14.0
+    container_name: redis_insight
+    restart: always
+    ports:
+      - 8001:8001
+    volumes:
+      - redis_insight_volume_data:/db
+    networks:
+      - my_bridge
+
+  
+  flask-backend:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: flask-backend
+    ports:
+      - "5001:5000"
+    environment:
+      FLASK_ENV: development
+      PYTHONPATH: /app/metrics
+    depends_on:
+      - redis
+    networks:
+      - my_bridge
+    volumes:
+      - ./metrics:/app/metrics
+
+  node-frontend:
+    build:
+      context: ./dashboard/flink-dashboard-frontend
+      args:
+        ENV: dev
+    container_name: node-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - flask-backend
+    networks:
+      - my_bridge
+    volumes:
+      - /app/node_modules 
+    command: npm start
+
+
+volumes:
+  settings:
+  data:
+  redis_volume_data:
+  redis_insight_volume_data:
